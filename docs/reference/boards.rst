@@ -259,6 +259,7 @@ stm32f072eval        STM32 F072 Eval                    stm32f0    https://www.s
 stm32f103_bluepill   STM32 F103 Bluepill                stm32f1    https://stm32-base.org/boards/STM32F103C8T6-Blue-Pill
 stm32f103_mini_2     STM32 F103 Mini v2                 stm32f1    https://stm32-base.org/boards/STM32F103RCT6-STM32-Mini-V2.0
 stm32f103ze_iar      IAR STM32 F103ze starter kit       stm32f1    n/a
+netduino2            Netduino 2                         stm32f2    n/a
 stm32f207nucleo      STM32 F207 Nucleo                  stm32f2    https://www.st.com/en/evaluation-tools/nucleo-f207zg.html
 stm32f303disco       STM32 F303 Discovery               stm32f3    https://www.st.com/en/evaluation-tools/stm32f3discovery.html
 feather_stm32f405    Adafruit Feather STM32F405         stm32f4    https://www.adafruit.com/product/4382
