@@ -100,6 +100,8 @@ void board_init(void)
   // 1ms tick timer
   SysTick_Config(SystemCoreClock / 1000);
 #elif CFG_TUSB_OS == OPT_OS_FREERTOS
+  // Explicitly disable systick to prevent its ISR from running before scheduler start
+  SysTick->CTRL &= ~1U;
   // If freeRTOS is used, IRQ priority is limit by max syscall ( smaller is higher )
   NVIC_SetPriority(USB0_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
 #endif
@@ -183,8 +185,10 @@ void board_init(void)
    */
   Chip_USB1_Init();
 
+#ifdef _BOARD_EA4357_H
   // USB0 Vbus Power: P2_3 on EA4357 channel B U20 GPIO26 active low (base board)
   Chip_SCU_PinMuxSet(2, 3, SCU_MODE_PULLUP | SCU_MODE_INBUFF_EN | SCU_MODE_FUNC7);
+#endif
 
   #if defined(BOARD_TUD_RHPORT) &&  BOARD_TUD_RHPORT == 0
     // P9_5 (GPIO5[18]) (GPIO28 on oem base) as USB connect, active low.
@@ -255,7 +259,7 @@ void SysTick_Handler(void) {
   system_ticks++;
 }
 
-uint32_t board_millis(void) {
+uint32_t tusb_time_millis_api(void) {
   return system_ticks;
 }
 

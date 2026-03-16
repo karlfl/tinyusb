@@ -32,6 +32,13 @@ import random
 import re
 import sys
 import time
+import warnings
+
+# Suppress pkg_resources deprecation warning from fs module
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+# Suppress pyfatfs unclean unmount warning
+warnings.filterwarnings("ignore", message="Filesystem was not cleanly unmounted")
+
 import serial
 import subprocess
 import json
@@ -41,6 +48,7 @@ import fs
 import hashlib
 import ctypes
 from pymtp import MTP
+import string
 
 ENUM_TIMEOUT = 30
 
@@ -50,6 +58,7 @@ STATUS_SKIPPED = "\033[33mSkipped\033[0m"
 
 verbose = False
 test_only = []
+build_dir = 'cmake-build'
 
 WCH_RISCV_CONTENT = """
 adapter driver wlinke
@@ -142,19 +151,47 @@ def read_disk_file(uid, lun, fname):
 def open_mtp_dev(uid):
     mtp = MTP()
     # MTP seems to take a while to enumerate
-    timeout = 2*ENUM_TIMEOUT
+    timeout = 2 * ENUM_TIMEOUT
     while timeout > 0:
-        # run_cmd(f"gio mount -u mtp://TinyUsb_TinyUsb_Device_{uid}/")
+        # unmount gio/gvfs MTP mount which blocks libmtp from accessing the device
+        subprocess.run(f"gio mount -u mtp://TinyUsb_TinyUsb_Device_{uid}/",
+                       shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for raw in mtp.detect_devices():
             mtp.device = mtp.mtp.LIBMTP_Open_Raw_Device(ctypes.byref(raw))
             if mtp.device:
                 sn = mtp.get_serialnumber().decode('utf-8')
-                #print(f'mtp serial = {sn}')
                 if sn == uid:
                     return mtp
+                mtp.disconnect()
         time.sleep(1)
         timeout -= 1
     return None
+
+
+def get_printer_dev(id, vendor_str, product_str, ifnum):
+    """Find /dev/usb/lpX by matching USB serial, vendor, product, and interface number via sysfs"""
+    vendor_str = vendor_str.replace(' ', '_') if vendor_str else ''
+    product_str = product_str.replace(' ', '_') if product_str else ''
+    for lp in glob.glob('/sys/class/usbmisc/lp*'):
+        try:
+            sn = open(f'{lp}/device/../serial').read().strip()
+            if sn == id:
+                return f'/dev/usb/{os.path.basename(lp)}'
+        except (FileNotFoundError, PermissionError, ValueError):
+            pass
+    return None
+
+
+def open_printer_dev(id, vendor_str, product_str, ifnum):
+    """Wait for printer device to enumerate and return its path"""
+    timeout = ENUM_TIMEOUT
+    while timeout > 0:
+        lp_dev = get_printer_dev(id, vendor_str, product_str, ifnum)
+        if lp_dev and os.path.exists(lp_dev):
+            return lp_dev
+        time.sleep(1)
+        timeout -= 1
+    assert False, f'Printer device not found for {id} if{ifnum:02d}'
 
 
 # -------------------------------------------------------------
@@ -293,7 +330,7 @@ def flash_esptool(board, firmware):
         idf_target = json.load(f)['IDF_TARGET']
     with open(f'{fw_dir}/flash_args') as f:
         flash_args = f.read().strip().replace('\n', ' ')
-    command = (f'esptool.py --chip {idf_target} -p {port} {flasher["args"]} '
+    command = (f'esptool --chip {idf_target} -p {port} {flasher["args"]} '
                f'--before=default_reset --after=hard_reset write_flash {flash_args}')
     ret = run_cmd(command, cwd=fw_dir)
     return ret
@@ -395,41 +432,71 @@ def test_device_cdc_dual_ports(board):
     ]
     ser = [open_serial_dev(p) for p in port]
 
-    str_test = [ b"test_no1", b"test_no2" ]
-    # Echo test write to each port and read back
-    for i in range(len(str_test)):
-        s = str_test[i]
-        l = len(s)
-        ser[i].write(s)
-        ser[i].flush()
-        rd = [ ser[i].read(l) for i in range(len(ser)) ]
-        assert rd[0] == s.lower(), f'Port1 wrong data: expected {s.lower()} was {rd[0]}'
-        assert rd[1] == s.upper(), f'Port2 wrong data: expected {s.upper()} was {rd[1]}'
+    def rand_ascii(length):
+        return "".join(random.choices(string.ascii_letters + string.digits, k=length)).encode("ascii")
+
+    sizes = [32, 64, 128, 256, 512, random.randint(2000, 5000)]
+
+    def write_and_check(writer, payload):
+        payload_len = len(payload)
+        for s in ser:
+            s.reset_input_buffer()
+        rd0 = b''
+        rd1 = b''
+        offset = 0
+        # Write in chunks of random 1-64 bytes (device has 64-byte buffer)
+        while offset < payload_len:
+            chunk_size = min(random.randint(1, 64), payload_len - offset)
+            ser[writer].write(payload[offset:offset + chunk_size])
+            ser[writer].flush()
+            rd0 += ser[0].read(chunk_size)
+            rd1 += ser[1].read(chunk_size)
+            offset += chunk_size
+        assert rd0 == payload.lower(), f'Port0 wrong data ({payload_len}): expected {payload.lower()}... was {rd0}'
+        assert rd1 == payload.upper(), f'Port1 wrong data ({payload_len}): expected {payload.upper()}... was {rd1}'
+
+    for size in sizes:
+        payload0 = rand_ascii(size)
+        write_and_check(0, payload0)
+
+        payload1 = rand_ascii(size)
+        write_and_check(1, payload1)
     ser[0].close()
     ser[1].close()
 
 
 def test_device_cdc_msc(board):
     uid = board['uid']
-    # Echo test
+    # CDC Echo test
     port = get_serial_dev(uid, 'TinyUSB', "TinyUSB_Device", 0)
     ser = open_serial_dev(port)
 
-    test_str = b"test_str"
-    ser.write(test_str)
-    ser.flush()
-    rd_str = ser.read(len(test_str))
-    ser.close()
-    assert  rd_str == test_str, f'CDC wrong data: expected: {test_str} was {rd_str}'
+    def rand_ascii(length):
+        return "".join(random.choices(string.ascii_letters + string.digits, k=length)).encode("ascii")
 
-    # Block test
-    data = read_disk_file(uid,0,'README.TXT')
+    sizes = [32, 64, 128, 256, 512, random.randint(2000, 5000)]
+    for size in sizes:
+        test_str = rand_ascii(size)
+        rd_str = b''
+        offset = 0
+        # Write in chunks of random 1-64 bytes (device has 64-byte buffer)
+        while offset < size:
+            chunk_size = min(random.randint(1, 64), size - offset)
+            ser.write(test_str[offset:offset + chunk_size])
+            ser.flush()
+            rd_str += ser.read(chunk_size)
+            offset += chunk_size
+        assert rd_str == test_str, f'CDC wrong data ({size} bytes):\n  expected: {test_str}\n  received: {rd_str}'
+    ser.close()
+
+    # MSC Block test
+    data = read_disk_file(uid, 0, 'README.TXT')
     readme = \
-    b"This is tinyusb's MassStorage Class demo.\r\n\r\n\
+        b"This is tinyusb's MassStorage Class demo.\r\n\r\n\
 If you find any bugs or get any questions, feel free to file an\r\n\
 issue at github.com/hathach/tinyusb"
 
-    assert data == readme, 'MSC wrong data'
+    assert data == readme, f'MSC wrong data in README.TXT\n expected: {readme.decode()}\n received: {data.decode()}'
 
 
 def test_device_cdc_msc_freertos(board):
@@ -513,6 +580,109 @@ def test_device_hid_composite_freertos(id):
     pass
 
 
+def test_device_printer_to_cdc(board):
+    import threading
+
+    uid = board['uid']
+
+    # Wait for CDC port and printer device
+    cdc_port = get_serial_dev(uid, 'TinyUSB', "TinyUSB_Device", 0)
+    ser = open_serial_dev(cdc_port)
+    lp_dev = open_printer_dev(uid, 'TinyUSB', 'TinyUSB_Device', 2)
+
+    # Test 0: Verify IEEE 1284 Device ID from sysfs
+    expected_id = 'MFG:TinyUSB;MDL:Printer to CDC;CMD:PS;CLS:PRINTER;'
+    lp_name = os.path.basename(lp_dev)
+    sysfs_id_path = f'/sys/class/usbmisc/{lp_name}/device/ieee1284_id'
+    if os.path.exists(sysfs_id_path):
+        with open(sysfs_id_path) as f:
+            ieee1284_id = f.read().strip()
+        if ieee1284_id:
+            assert ieee1284_id == expected_id, (f'IEEE 1284 ID mismatch:\n'
+                                                f'  expected: {expected_id}\n  got: {ieee1284_id}')
+
+    def rand_ascii(length):
+        return "".join(random.choices(string.ascii_letters + string.digits, k=length)).encode("ascii")
+
+    sizes = [32, 64, 128, 256, 512, random.randint(2000, 5000)]
+
+    # flush any stale data
+    ser.reset_input_buffer()
+
+    # Test 1: Printer -> CDC with multiple sizes, write in random 1-64 byte chunks
+    for size in sizes:
+        test_data = rand_ascii(size)
+        ser.reset_input_buffer()
+        rd = b''
+        offset = 0
+        with open(lp_dev, 'wb') as lp:
+            while offset < size:
+                chunk_size = min(random.randint(1, 64), size - offset)
+                lp.write(test_data[offset:offset + chunk_size])
+                lp.flush()
+                rd += ser.read(chunk_size)
+                offset += chunk_size
+        # read any remaining bytes (fullspeed devices may need extra time)
+        while len(rd) < size:
+            remaining = ser.read(size - len(rd))
+            if not remaining:
+                break
+            rd += remaining
+        assert rd == test_data, (f'Printer->CDC wrong data ({size} bytes):\n'
+                                 f'  expected: {test_data[:64]}\n  received: {rd[:64]}')
+
+    # Test 2: CDC -> Printer with multiple sizes, write in random 1-64 byte chunks
+    # Use a thread to read from printer since /dev/usb/lp read blocks
+    ser.reset_input_buffer()
+    time.sleep(0.5)
+    for size in sizes:
+        test_data = rand_ascii(size)
+        rd_result = [b'', None]  # [data, error]
+        reader_ready = threading.Event()
+
+        def lp_reader():
+            try:
+                rd = b''
+                fd = os.open(lp_dev, os.O_RDONLY)
+                reader_ready.set()
+                try:
+                    while len(rd) < size:
+                        chunk = os.read(fd, min(64, size - len(rd)))
+                        if not chunk:
+                            break
+                        rd += chunk
+                finally:
+                    os.close(fd)
+                rd_result[0] = rd
+            except Exception as e:
+                rd_result[1] = e
+                reader_ready.set()
+
+        reader = threading.Thread(target=lp_reader, daemon=True)
+        reader.start()
+        # wait for reader to open lp device before writing
+        reader_ready.wait(timeout=5)
+        time.sleep(0.1)
+
+        # Write to CDC in small chunks with flush to avoid overflowing device FIFO
+        offset = 0
+        while offset < size:
+            chunk_size = min(random.randint(1, 64), size - offset)
+            ser.write(test_data[offset:offset + chunk_size])
+            ser.flush()
+            time.sleep(0.01)
+            offset += chunk_size
+
+        reader.join(timeout=10)
+        assert not reader.is_alive(), f'CDC->Printer timeout ({size} bytes)'
+        assert rd_result[1] is None, f'CDC->Printer read error: {rd_result[1]}'
+        assert rd_result[0] == test_data, (f'CDC->Printer wrong data ({size} bytes):\n'
+                                           f'  expected: {test_data[:64]}\n  received: {rd_result[0][:64]}')
+        time.sleep(0.2)
+
+    ser.close()
+
+
 def test_device_mtp(board):
     uid = board['uid']
 
@@ -584,7 +754,8 @@ device_tests = [
     'device/dfu_runtime',
     'device/cdc_msc_freertos',
     'device/hid_boot_interface',
-    # 'device/mtp'
+    'device/printer_to_cdc',
+    'device/mtp'
 ]
 
 dual_tests = [
@@ -611,9 +782,7 @@ def test_example(board, f1, example):
     if f1 != "":
         f1_str = '-f1_' + f1.replace(' ', '_')
 
-    fw_dir = f'{TINYUSB_ROOT}/cmake-build/cmake-build-{name}{f1_str}/{example}'
-    if not os.path.exists(fw_dir):
-        fw_dir = f'{TINYUSB_ROOT}/examples/cmake-build-{name}{f1_str}/{example}'
+    fw_dir = f'{TINYUSB_ROOT}/{build_dir}/cmake-build-{name}{f1_str}/{example}'
     fw_name = f'{fw_dir}/{os.path.basename(example)}'
     print(f'{name+f1_str:40} {example:30} ...', end='')
 
@@ -701,6 +870,7 @@ def main():
     """
     global verbose
     global test_only
+    global build_dir
 
     duration = time.time()
 
@@ -709,6 +879,7 @@ def main():
     parser.add_argument('-b', '--board', action='append', default=[], help='Boards to test, all if not specified')
     parser.add_argument('-s', '--skip', action='append', default=[], help='Skip boards from test')
     parser.add_argument('-t', '--test-only', action='append', default=[], help='Tests to run, all if not specified')
+    parser.add_argument('-B', '--build', default='cmake-build', help='Build folder name (default: cmake-build)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
     args = parser.parse_args()
 
@@ -717,6 +888,7 @@ def main():
     skip_boards = args.skip
     verbose = args.verbose
     test_only = args.test_only
+    build_dir = args.build
 
     # if config file is not found, try to find it in the same directory as this script
     if not os.path.exists(config_file):

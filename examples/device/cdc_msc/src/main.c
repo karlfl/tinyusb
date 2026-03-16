@@ -124,6 +124,7 @@ void cdc_task(void) {
 
     if ((btn_prev == 0u) && (btn != 0u)) {
       uart_state.dsr ^= 1;
+      uart_state.dcd ^= 1;
       tud_cdc_notify_uart_state(&uart_state);
     }
     btn_prev = btn;
@@ -159,7 +160,7 @@ void led_blinking_task(void) {
 
   if (blink_enable) {
     // Blink every interval ms
-    if (board_millis() - start_ms < blink_interval_ms) {
+    if (tusb_time_millis_api() - start_ms < blink_interval_ms) {
       return; // not enough time
     }
     start_ms += blink_interval_ms;

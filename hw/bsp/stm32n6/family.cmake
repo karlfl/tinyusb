@@ -21,7 +21,7 @@ set(FAMILY_MCUS STM32N6 CACHE INTERNAL "")
 # Port & Speed Selection
 # ----------------------
 if (NOT DEFINED RHPORT_DEVICE)
-  set(RHPORT_DEVICE 1)
+  set(RHPORT_DEVICE 0)
 endif ()
 if (NOT DEFINED RHPORT_HOST)
   set(RHPORT_HOST 1)
@@ -44,11 +44,11 @@ set(STARTUP_FILE_GNU ${ST_CMSIS}/Source/Templates/gcc/startup_${MCU_VARIANT}.s)
 set(STARTUP_FILE_Clang ${STARTUP_FILE_GNU})
 set(STARTUP_FILE_IAR ${ST_CMSIS}/Source/Templates/iar/startup_${MCU_VARIANT}.s)
 if(NOT DEFINED LD_FILE_GNU)
-set(LD_FILE_GNU ${ST_CMSIS}/Source/Templates/gcc/linker/${MCU_VARIANT}_flash.ld)
+set(LD_FILE_GNU ${ST_CMSIS}/Source/Templates/gcc/linker/${MCU_VARIANT}_axisram2_fsbl.ld)
 endif()
 set(LD_FILE_Clang ${LD_FILE_GNU})
 if(NOT DEFINED LD_FILE_IAR)
-  set(LD_FILE_IAR ${ST_CMSIS}/Source/Templates/iar/linker/${MCU_VARIANT}_flash.icf)
+  set(LD_FILE_IAR ${ST_CMSIS}/Source/Templates/iar/linker/${MCU_VARIANT}_axisram2_fsbl.icf)
 endif()
 
 #------------------------------------
@@ -68,6 +68,7 @@ function(family_add_board BOARD_TARGET)
     ${ST_HAL_DRIVER}/Src/${ST_PREFIX}_hal_rcc_ex.c
     ${ST_HAL_DRIVER}/Src/${ST_PREFIX}_hal_uart.c
     ${ST_HAL_DRIVER}/Src/${ST_PREFIX}_hal_uart_ex.c
+    ${ST_HAL_DRIVER}/Src/${ST_PREFIX}_hal_rif.c
     )
   target_include_directories(${BOARD_TARGET} PUBLIC
     ${CMAKE_CURRENT_FUNCTION_LIST_DIR}
@@ -80,8 +81,8 @@ function(family_add_board BOARD_TARGET)
     BOARD_TUD_MAX_SPEED=${RHPORT_DEVICE_SPEED}
     BOARD_TUH_RHPORT=${RHPORT_HOST}
     BOARD_TUH_MAX_SPEED=${RHPORT_HOST_SPEED}
-    SEGGER_RTT_SECTION="noncacheable_buffer"
-    BUFFER_SIZE_UP=0x3000
+    SEGGER_RTT_SECTION=".noncacheable"
+    BUFFER_SIZE_UP=0x4000
     )
 
   update_board(${BOARD_TARGET})

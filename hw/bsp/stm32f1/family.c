@@ -77,8 +77,9 @@ void board_init(void) {
 #if CFG_TUSB_OS == OPT_OS_NONE
   // 1ms tick timer
   SysTick_Config(SystemCoreClock / 1000);
-
 #elif CFG_TUSB_OS == OPT_OS_FREERTOS
+  // Explicitly disable systick to prevent its ISR from running before scheduler start
+  SysTick->CTRL &= ~1U;
   // If freeRTOS is used, IRQ priority is limit by max syscall ( smaller is higher )
   NVIC_SetPriority(USB_HP_CAN1_TX_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
   NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
@@ -147,12 +148,12 @@ void board_init(void) {
 #ifdef USB_CONNECT_PIN
 void dcd_disconnect(uint8_t rhport) {
   (void)rhport;
-  HAL_GPIO_WritePin(USB_CONNECT_PORT, USB_CONNECT_PIN, 1-USB_CONNECT_STATE);
+  HAL_GPIO_WritePin(USB_CONNECT_PORT, USB_CONNECT_PIN, (GPIO_PinState)(1 - USB_CONNECT_STATE));
 }
 
 void dcd_connect(uint8_t rhport) {
   (void)rhport;
-  HAL_GPIO_WritePin(USB_CONNECT_PORT, USB_CONNECT_PIN, USB_CONNECT_STATE);
+  HAL_GPIO_WritePin(USB_CONNECT_PORT, USB_CONNECT_PIN, (GPIO_PinState)USB_CONNECT_STATE);
 }
 #endif
 
@@ -201,7 +202,7 @@ void SysTick_Handler(void) {
   system_ticks++;
 }
 
-uint32_t board_millis(void) {
+uint32_t tusb_time_millis_api(void) {
   return system_ticks;
 }
 
