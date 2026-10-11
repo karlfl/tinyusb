@@ -170,15 +170,38 @@ uint32_t board_button_read(void) {
   return BUTTON_STATE_ACTIVE == GPIO_PinRead(GPIO, BUTTON_PORT, BUTTON_PIN);
 }
 
+size_t board_get_unique_id(uint8_t id[], size_t max_len) {
+  // 128-bit UUID in the flash PFR region at 0x0009FC70 (UM11126 rev 2.1 section 48.8)
+  const uint8_t* uuid = (const uint8_t*) 0x0009FC70;
+  size_t const len = tu_min32(max_len, 16);
+  memcpy(id, uuid, len);
+  return len;
+}
+
 int board_uart_read(uint8_t* buf, int len) {
   (void) buf;
   (void) len;
-  return 0;
+  return -1;
 }
 
 int board_uart_write(void const* buf, int len) {
-  USART_WriteBlocking(UART_DEV, (uint8_t const*) buf, len);
-  return len;
+#ifdef UART_DEV
+  const uint8_t *p = (const uint8_t *) buf;
+  int count = 0;
+  while (count < len) {
+    if (UART_DEV->FIFOSTAT & USART_FIFOSTAT_TXNOTFULL_MASK) {
+      UART_DEV->FIFOWR = p[count];
+      count++;
+    } else {
+      break;
+    }
+  }
+  return count;
+#else
+  (void) buf;
+  (void) len;
+  return -1;
+#endif
 }
 
 #if CFG_TUSB_OS == OPT_OS_NONE

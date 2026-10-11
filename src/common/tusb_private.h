@@ -1,25 +1,6 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2022, Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2022, Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -46,17 +27,11 @@ extern tusb_role_t _tusb_rhport_role[TUP_USBIP_CONTROLLER_NUM];
 // Endpoint
 //--------------------------------------------------------------------+
 
-enum {
- TU_EDPT_STATE_BUSY    = 0x01,
- TU_EDPT_STATE_STALLED = 0x02,
- TU_EDPT_STATE_CLAIMED = 0x04,
-};
-
-typedef struct TU_ATTR_PACKED {
-  volatile uint8_t busy    : 1;
-  volatile uint8_t stalled : 1;
-  volatile uint8_t claimed : 1;
-} tu_edpt_state_t;
+// Endpoint state bits — manipulate the bare uint8_t with these masks.
+#define TU_EDPT_STATE_BUSY    0x01u
+#define TU_EDPT_STATE_STALLED 0x02u
+#define TU_EDPT_STATE_CLAIMED 0x04u
+#define TU_EDPT_STATE_RX_PENDING 0x08u // OUT xfer completed, ep buffer not yet consumed by the class (#1292)
 
 typedef struct {
   uint8_t  hwid;    // device: rhport, host: daddr
@@ -89,13 +64,13 @@ TU_ATTR_ALWAYS_INLINE static inline bool tu_edpt_validate(const tusb_desc_endpoi
 
 // Bind drivers to all interfaces and endpoints in the provided configuration descriptor
 bool tu_bind_driver_to_ep_itf(uint8_t driver_id, uint8_t ep2drv[][2], uint8_t itf2drv[], uint8_t itf_max,
-                              const uint8_t *p_desc, uint16_t desc_len);
+                              uint8_t ep_max, const uint8_t *p_desc, uint16_t desc_len);
 
 // Claim an endpoint with provided mutex
-bool tu_edpt_claim(tu_edpt_state_t* ep_state, osal_mutex_t mutex);
+bool tu_edpt_claim(volatile uint8_t* ep_state, osal_mutex_t mutex);
 
 // Release an endpoint with provided mutex
-bool tu_edpt_release(tu_edpt_state_t* ep_state, osal_mutex_t mutex);
+bool tu_edpt_release(volatile uint8_t* ep_state, osal_mutex_t mutex);
 
 //--------------------------------------------------------------------+
 // Endpoint Stream
@@ -170,11 +145,21 @@ uint32_t tu_edpt_stream_read(tu_edpt_stream_t *s, void *buffer, uint32_t bufsize
 // Start an usb transfer if endpoint is not busy
 uint32_t tu_edpt_stream_read_xfer(tu_edpt_stream_t *s);
 
+#if CFG_TUD_ENABLED
+// Release an OUT endpoint's RX_PENDING hold once its buffer is consumed, allowing it to be claimed
+void usbd_edpt_rx_consume(uint8_t rhport, uint8_t ep_addr);
+#else
+  #define usbd_edpt_rx_consume(_rhport, _ep_addr)
+#endif
+
 // Complete read transfer by writing EP -> FIFO. Must be called in the transfer complete callback
 TU_ATTR_ALWAYS_INLINE static inline
 void tu_edpt_stream_read_xfer_complete(tu_edpt_stream_t* s, uint32_t xferred_bytes) {
   if (s->ep_buf != NULL) {
     tu_fifo_write_n(&s->ff, s->ep_buf, (uint16_t)xferred_bytes);
+  }
+  if (!s->is_host) {
+    usbd_edpt_rx_consume(s->hwid, s->ep_addr);
   }
 }
 

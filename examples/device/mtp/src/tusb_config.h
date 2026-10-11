@@ -57,6 +57,11 @@
 #define CFG_TUSB_OS           OPT_OS_NONE
 #endif
 
+// Espressif IDF requires "freertos/" prefix in include path
+#ifdef ESP_PLATFORM
+#define CFG_TUSB_OS_INC_PATH  freertos/
+#endif
+
 #ifndef CFG_TUSB_DEBUG
 #define CFG_TUSB_DEBUG        0
 #endif
@@ -106,6 +111,7 @@
    MTP_OP_GET_OBJECT_HANDLES, \
    MTP_OP_GET_OBJECT_INFO, \
    MTP_OP_GET_OBJECT, \
+   MTP_OP_GET_PARTIAL_OBJECT, \
    MTP_OP_DELETE_OBJECT, \
    MTP_OP_SEND_OBJECT_INFO, \
    MTP_OP_SEND_OBJECT, \

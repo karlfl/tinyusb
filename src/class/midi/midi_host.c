@@ -1,25 +1,6 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2019 Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2019 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -461,7 +442,7 @@ uint32_t tuh_midi_stream_write(uint8_t idx, uint8_t cable_num, uint8_t const *bu
     if (data >= MIDI_STATUS_SYSREAL_TIMING_CLOCK) {
       // real-time messages need to be sent right away
       midi_driver_stream_t streamrt;
-      streamrt.buffer[0] = MIDI_CIN_SYSEX_END_1BYTE;
+      streamrt.buffer[0] = (uint8_t)((cable_num << 4) | MIDI_CIN_SYSEX_END_1BYTE);
       streamrt.buffer[1] = data;
       streamrt.index = 2;
       streamrt.total = 2;
@@ -476,9 +457,9 @@ uint32_t tuh_midi_stream_write(uint8_t idx, uint8_t cable_num, uint8_t const *bu
       stream->buffer[1] = data;
 
       // Check to see if we're still in a SysEx transmit.
-      if (stream->buffer[0] == MIDI_CIN_SYSEX_START) {
+      if ((stream->buffer[0] & 0xF) == MIDI_CIN_SYSEX_START) {
         if (data == MIDI_STATUS_SYSEX_END) {
-          stream->buffer[0] = MIDI_CIN_SYSEX_END_1BYTE;
+          stream->buffer[0] = (uint8_t)((cable_num << 4) | MIDI_CIN_SYSEX_END_1BYTE);
           stream->total = 2;
         } else {
           stream->total = 4;
@@ -506,6 +487,7 @@ uint32_t tuh_midi_stream_write(uint8_t idx, uint8_t cable_num, uint8_t const *bu
           stream->buffer[0] = MIDI_CIN_SYSEX_END_1BYTE;
           stream->total = 2;
         }
+        stream->buffer[0] |= (uint8_t)(cable_num << 4);
       } else {
         // Pack individual bytes if we don't support packing them into words.
         stream->buffer[0] = (uint8_t) (cable_num << 4 | 0xf);
@@ -520,8 +502,8 @@ uint32_t tuh_midi_stream_write(uint8_t idx, uint8_t cable_num, uint8_t const *bu
       stream->buffer[stream->index] = data;
       stream->index++;
       // See if this byte ends a SysEx.
-      if (stream->buffer[0] == MIDI_CIN_SYSEX_START && data == MIDI_STATUS_SYSEX_END) {
-        stream->buffer[0] = MIDI_CIN_SYSEX_START + (stream->index - 1);
+      if ((stream->buffer[0] & 0xF) == MIDI_CIN_SYSEX_START && data == MIDI_STATUS_SYSEX_END) {
+        stream->buffer[0] = (uint8_t)((cable_num << 4) | (MIDI_CIN_SYSEX_START + (stream->index - 1)));
         stream->total = stream->index;
       }
     }

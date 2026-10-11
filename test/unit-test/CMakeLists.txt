@@ -117,15 +117,30 @@ add_ceedling_test(
 add_ceedling_test(
   test_usbd
   ${CEEDLING_WORKDIR}/test/device/usbd/test_usbd.c
-  "${CEEDLING_WORKDIR}/../../src/tusb.c;${CEEDLING_WORKDIR}/../../src/device/usbd.c;${CEEDLING_WORKDIR}/../../src/device/usbd_control.c;${CEEDLING_WORKDIR}/../../src/common/tusb_fifo.c"
+  "${CEEDLING_WORKDIR}/../../src/tusb.c;${CEEDLING_WORKDIR}/../../src/device/usbd.c;${CEEDLING_WORKDIR}/../../src/common/tusb_fifo.c"
   "${CEEDLING_BUILD_DIR}/test/mocks/test_usbd/mock_dcd.c;${CEEDLING_BUILD_DIR}/test/mocks/test_usbd/mock_msc_device.c"
   )
 
 add_ceedling_test(
   test_msc_device
   ${CEEDLING_WORKDIR}/test/device/msc/test_msc_device.c
-  "${CEEDLING_WORKDIR}/../../src/tusb.c;${CEEDLING_WORKDIR}/../../src/device/usbd.c;${CEEDLING_WORKDIR}/../../src/device/usbd_control.c;${CEEDLING_WORKDIR}/../../src/class/msc/msc_device.c;${CEEDLING_WORKDIR}/../../src/common/tusb_fifo.c"
+  "${CEEDLING_WORKDIR}/../../src/tusb.c;${CEEDLING_WORKDIR}/../../src/device/usbd.c;${CEEDLING_WORKDIR}/../../src/class/msc/msc_device.c;${CEEDLING_WORKDIR}/../../src/common/tusb_fifo.c"
   "${CEEDLING_BUILD_DIR}/test/mocks/test_msc_device/mock_dcd.c"
+  )
+
+add_ceedling_test(
+  test_audio_host
+  ${CEEDLING_WORKDIR}/test/host/audio/test_audio_host.c
+  "${CEEDLING_WORKDIR}/../../src/class/audio/audio_host.c;${CEEDLING_WORKDIR}/../../src/common/tusb_fifo.c"
+  ""
+  )
+target_compile_definitions(test_audio_host PRIVATE
+  CFG_TUH_ENABLED=1
+  CFG_TUH_AUDIO=1
+  CFG_TUH_AUDIO_PROTOCOLS=3
+  CFG_TUSB_DEBUG=0
+  CFG_TUH_AUDIO_EPIN_BUFSIZE=1024
+  CFG_TUH_AUDIO_EPOUT_BUFSIZE=1024
   )
 
 enable_testing()

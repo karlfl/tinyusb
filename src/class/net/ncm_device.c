@@ -1,28 +1,9 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2019 Ha Thach (tinyusb.org)
- * Copyright (c) 2024 Hardy Griech
- * Copyright (c) 2020 Jacob Berg Potter
- * Copyright (c) 2020 Peter Lawrence
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2019 Ha Thach (tinyusb.org)
+ * SPDX-FileCopyrightText: Copyright (c) 2024 Hardy Griech
+ * SPDX-FileCopyrightText: Copyright (c) 2020 Jacob Berg Potter
+ * SPDX-FileCopyrightText: Copyright (c) 2020 Peter Lawrence
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -83,6 +64,7 @@ typedef struct {
   uint8_t itf_num;      // interface number
   uint8_t itf_data_alt; // ==0 -> no endpoints, i.e. no network traffic, ==1 -> normal operation with two endpoints (spec, chapter 5.3)
   uint8_t rhport;       // storage of \a rhport because some callbacks are done without it
+  uint16_t ep_size;     // bulk endpoint max packet size (IN and OUT assumed equal)
 
   // recv handling
   recv_ntb_t *recv_free_ntb[RECV_NTB_N];                // free list of recv NTBs
@@ -118,6 +100,12 @@ typedef struct {
   bool notification_xmit_is_running;                    // notification is currently transmitted
   bool link_is_up;                                      // current link state
 
+  // host-configured transmit limits
+  uint8_t bm_capabilities;
+  uint16_t xmit_max_ntb_size;                           // maximum NTB size device may send
+  uint16_t xmit_max_datagrams;                          // maximum datagrams per NTB device may send
+  ncm_ntb_input_size_t ntb_input_size;
+
   // misc
   bool tud_network_recv_renew_active;                   // tud_network_recv_renew() is active (avoid recursive invocations)
   bool tud_network_recv_renew_process_again;            // tud_network_recv_renew() should process again
@@ -138,22 +126,44 @@ typedef struct {
 static ncm_interface_t ncm_interface;
 CFG_TUD_MEM_SECTION static ncm_epbuf_t ncm_epbuf;
 
+//--------------------------------------------------------------------+
+// Weak stubs: invoked if no strong implementation is available
+//--------------------------------------------------------------------+
+TU_ATTR_WEAK void tud_network_set_packet_filter_cb(uint16_t packet_filter) {
+  (void) packet_filter;
+}
+
+TU_ATTR_WEAK bool tud_network_default_link_state_cb(void) {
+  #ifdef CFG_TUD_NCM_DEFAULT_LINK_UP
+  return CFG_TUD_NCM_DEFAULT_LINK_UP;
+  #else
+  return true;
+  #endif
+}
+
 /**
  * This is the NTB parameter structure
  *
  * \attention
  *     We are lucky, that byte order is correct
  */
+
+// wNdbInDivisor/wNdbOutDivisor: a Windows Update (KB5124008, Sept 2026)
+// enabled NTB-parameter validation in usbncm.sys requiring these to be
+// >=4 and a power of 2. 1 is spec-legal but now rejected with
+// STATUS_DEVICE_HARDWARE_ERROR (Code 10) during enumeration. 4 satisfies
+// the check and is spec-legal on the device side too.
+
 TU_ATTR_ALIGNED(4) static const ntb_parameters_t ntb_parameters = {
   .wLength                  = sizeof(ntb_parameters_t),
   .bmNtbFormatsSupported    = 0x01,// 16-bit NTB supported
   .dwNtbInMaxSize           = CFG_TUD_NCM_IN_NTB_MAX_SIZE,
-  .wNdbInDivisor            = 1,
+  .wNdbInDivisor            = 4,
   .wNdbInPayloadRemainder   = 0,
   .wNdbInAlignment          = TUD_NCM_ALIGNMENT,
   .wReserved                = 0,
   .dwNtbOutMaxSize          = CFG_TUD_NCM_OUT_NTB_MAX_SIZE,
-  .wNdbOutDivisor           = 1,
+  .wNdbOutDivisor           = 4,
   .wNdbOutPayloadRemainder  = 0,
   .wNdbOutAlignment         = TUD_NCM_ALIGNMENT,
   .wNtbOutMaxDatagrams      = CFG_TUD_NCM_OUT_MAX_DATAGRAMS_PER_NTB,
@@ -340,7 +350,8 @@ static xmit_ntb_t *xmit_get_next_ready_ntb(void) {
 static bool xmit_insert_required_zlp(uint8_t rhport, uint32_t xferred_bytes) {
   TU_LOG_DRV("xmit_insert_required_zlp(%d,%ld)\n", rhport, xferred_bytes);
 
-  if (xferred_bytes == 0 || xferred_bytes % CFG_TUD_NET_ENDPOINT_SIZE != 0) {
+  uint16_t const ep_size = ncm_interface.ep_size;
+  if (xferred_bytes == 0 || (xferred_bytes & (ep_size-1)) != 0) {
     return false;
   }
 
@@ -408,10 +419,10 @@ static bool xmit_requested_datagram_fits_into_current_ntb(uint16_t datagram_size
   if (ncm_interface.xmit_glue_ntb == NULL) {
     return false;
   }
-  if (ncm_interface.xmit_glue_ntb_datagram_ndx >= CFG_TUD_NCM_IN_MAX_DATAGRAMS_PER_NTB) {
+  if (ncm_interface.xmit_glue_ntb_datagram_ndx >= ncm_interface.xmit_max_datagrams) {
     return false;
   }
-  if (ncm_interface.xmit_glue_ntb->nth.wBlockLength + datagram_size + XMIT_ALIGN_OFFSET(datagram_size) > CFG_TUD_NCM_IN_NTB_MAX_SIZE) {
+  if (ncm_interface.xmit_glue_ntb->nth.wBlockLength + datagram_size + (uint32_t)XMIT_ALIGN_OFFSET(datagram_size) > (uint32_t)ncm_interface.xmit_max_ntb_size) {
     return false;
   }
   return true;
@@ -598,7 +609,7 @@ static bool recv_validate_datagram(const recv_ntb_t *ntb, uint32_t len) {
     TU_LOG_DRV("(EE) ill block length2: %d > %d\n", nth16->wBlockLength, CFG_TUD_NCM_OUT_NTB_MAX_SIZE);
     return false;
   }
-  if (nth16->wNdpIndex < sizeof(nth16) || nth16->wNdpIndex > len - (sizeof(ndp16_t) + 2 * sizeof(ndp16_datagram_t))) {
+  if (nth16->wNdpIndex < sizeof(nth16_t) || nth16->wNdpIndex > len - (sizeof(ndp16_t) + 2 * sizeof(ndp16_datagram_t))) {
     TU_LOG_DRV("(EE) ill position of first ndp: %d (%lu)\n", nth16->wNdpIndex, len);
     return false;
   }
@@ -608,6 +619,12 @@ static bool recv_validate_datagram(const recv_ntb_t *ntb, uint32_t len) {
 
   if (ndp16->wLength < sizeof(ndp16_t) + 2 * sizeof(ndp16_datagram_t)) {
     TU_LOG_DRV("(EE) ill ndp16 length: %d\n", ndp16->wLength);
+    return false;
+  }
+  // the NDP block (wLength bytes from wNdpIndex) must fit within the received NTB, otherwise the
+  // datagram pointer array walked below (max_ndx is derived from wLength) runs past ntb->data
+  if ((uint32_t) nth16->wNdpIndex + ndp16->wLength > len) {
+    TU_LOG_DRV("(EE) ill ndp16 length: %d (%lu)\n", ndp16->wLength, len);
     return false;
   }
   if (ndp16->dwSignature != NDP16_SIGNATURE_NCM0 && ndp16->dwSignature != NDP16_SIGNATURE_NCM1) {
@@ -708,7 +725,7 @@ static void recv_transfer_datagram_to_glue_logic(void) {
 bool tud_network_can_xmit(uint16_t size) {
   TU_LOG_DRV("tud_network_can_xmit(%d)\n", size);
 
-  TU_ASSERT(size <= CFG_TUD_NCM_IN_NTB_MAX_SIZE - (sizeof(nth16_t) + sizeof(ndp16_t) + 2 * sizeof(ndp16_datagram_t)), false);
+  TU_ASSERT(size <= ncm_interface.xmit_max_ntb_size - (sizeof(nth16_t) + sizeof(ndp16_t) + 2 * sizeof(ndp16_datagram_t)), false);
 
   if (xmit_requested_datagram_fits_into_current_ntb(size) || xmit_setup_next_glue_ntb()) {
     // -> everything is fine
@@ -790,29 +807,54 @@ static void tud_network_recv_renew_r(uint8_t rhport) {
 } // tud_network_recv_renew
 
 /**
- * Set the link state and send notification to host
+ * usbd-task trampoline for tud_network_link_state(), packing rhport and is_up
+ * into a single pointer-sized argument.
+ *
+ * Runs entirely in the usbd task context, so it cannot race the notify
+ * xfer-completion callback over the notification state machine. Re-arming
+ * notification_xmit_state and kicking notification_xmit() (rather than
+ * sending NETWORK_CONNECTION directly) means a state change that collides
+ * with an in-flight notification is picked up by the existing completion
+ * callback instead of being silently dropped - which would otherwise leave
+ * the host stuck at NO-CARRIER after a link-state change.
  */
-void tud_network_link_state(uint8_t rhport, bool is_up) {
-  TU_LOG_DRV("tud_network_link_state(%d, %d)\n", rhport, is_up);
+static void ncm_link_state_task(void *param) {
+  uintptr_t const arg = (uintptr_t) param;
+  uint8_t const rhport = (uint8_t) (arg >> 1);
+  bool const is_up = (arg & 1u) != 0;
 
   if (ncm_interface.link_is_up == is_up) {
-    // No change in link state
-    return;
+    return; // no change in link state
   }
 
   ncm_interface.link_is_up = is_up;
 
-  // Only send notification if we have an active data interface
   if (ncm_interface.itf_data_alt != 1) {
-    TU_LOG_DRV("  link state notification skipped (interface not active)\n");
-    return;
+    TU_LOG_DRV("  link state notification deferred (interface not active)\n");
+    return; // data interface not active yet; SET_INTERFACE(alt=1) will notify
   }
 
-  // Reset notification state to send speed change notification first, then link state notification
+  // A link toggle does not change the link speed, so strictly only the
+  // NETWORK_CONNECTION notification would need (re)sending. Re-running the
+  // speed-then-connection sequence keeps this on the same state machine the
+  // completion callback already drives, at the cost of a redundant speed
+  // notification on every toggle.
   ncm_interface.notification_xmit_state = NOTIFICATION_SPEED;
-
-  // Trigger notification transmission
   notification_xmit(rhport, false);
+}
+
+/**
+ * Set the link state and notify the host.
+ *
+ * Defers onto the usbd task so a caller running in a different task than
+ * tud_task() cannot race the notification state machine against the notify
+ * xfer-completion callback.
+ */
+void tud_network_link_state(uint8_t rhport, bool is_up) {
+  TU_LOG_DRV("tud_network_link_state(%d, %d)\n", rhport, is_up);
+
+  uintptr_t const arg = ((uintptr_t) rhport << 1) | (is_up ? 1u : 0u);
+  usbd_defer_func(ncm_link_state_task, (void *) arg, false);
 }
 
 //-----------------------------------------------------------------------------
@@ -828,18 +870,16 @@ void netd_init(void) {
 
   memset(&ncm_interface, 0, sizeof(ncm_interface));
 
+  ncm_interface.xmit_max_ntb_size = CFG_TUD_NCM_IN_NTB_MAX_SIZE;
+  ncm_interface.xmit_max_datagrams = CFG_TUD_NCM_IN_MAX_DATAGRAMS_PER_NTB;
+
   for (int i = 0; i < XMIT_NTB_N; ++i) {
     ncm_interface.xmit_free_ntb[i] = &ncm_epbuf.xmit[i].ntb;
   }
   for (int i = 0; i < RECV_NTB_N; ++i) {
     ncm_interface.recv_free_ntb[i] = &ncm_epbuf.recv[i].ntb;
   }
-  // Default link state - can be configured via CFG_TUD_NCM_DEFAULT_LINK_UP
-  #ifdef CFG_TUD_NCM_DEFAULT_LINK_UP
-  ncm_interface.link_is_up = CFG_TUD_NCM_DEFAULT_LINK_UP;
-  #else
-  ncm_interface.link_is_up = true; // Default to link up if not set.
-  #endif
+  ncm_interface.link_is_up = tud_network_default_link_state_cb();
 } // netd_init
 
 /**
@@ -878,10 +918,14 @@ uint16_t netd_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc, uint16
 
   ncm_interface.itf_num = itf_desc->bInterfaceNumber;// management interface
 
-  // skip the two first entries and the following TUSB_DESC_CS_INTERFACE entries
   uint16_t drv_len = sizeof(tusb_desc_interface_t);
   uint8_t const *p_desc = tu_desc_next(itf_desc);
   while (tu_desc_type(p_desc) == TUSB_DESC_CS_INTERFACE && drv_len <= max_len) {
+    if (tu_desc_subtype(p_desc) == CDC_FUNC_DESC_NCM) {
+      TU_ASSERT(tu_desc_len(p_desc) >= sizeof(tusb_desc_cdc_ncm_func_t), 0);
+      tusb_desc_cdc_ncm_func_t const *ncm_func = (tusb_desc_cdc_ncm_func_t const *) p_desc;
+      ncm_interface.bm_capabilities = ncm_func->bmCapabilities;
+    }
     drv_len += tu_desc_len(p_desc);
     p_desc = tu_desc_next(p_desc);
   }
@@ -905,6 +949,7 @@ uint16_t netd_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc, uint16
   // a TUSB_DESC_ENDPOINT (actually two) must follow, open these endpoints
   TU_ASSERT(tu_desc_type(p_desc) == TUSB_DESC_ENDPOINT, 0);
   TU_ASSERT(usbd_open_edpt_pair(rhport, p_desc, 2, TUSB_XFER_BULK, &ncm_interface.ep_out, &ncm_interface.ep_in));
+  ncm_interface.ep_size = tu_edpt_packet_size((tusb_desc_endpoint_t const *) p_desc);
   drv_len += 2 * sizeof(tusb_desc_endpoint_t);
 
   return drv_len;
@@ -954,12 +999,12 @@ bool netd_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint32_
  * At startup transmission of notification packets are done here.
  */
 bool netd_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const *request) {
-  if (stage != CONTROL_STAGE_SETUP) {
-    return true;
-  }
 
   switch (request->bmRequestType_bit.type) {
     case TUSB_REQ_TYPE_STANDARD:
+      if (stage != CONTROL_STAGE_SETUP) {
+        return true;
+      }
 
       switch (request->bRequest) {
         case TUSB_REQ_GET_INTERFACE: {
@@ -993,16 +1038,75 @@ bool netd_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t 
       TU_VERIFY(ncm_interface.itf_num == request->wIndex, false);
       switch (request->bRequest) {
         case NCM_GET_NTB_PARAMETERS: {
+          if (stage != CONTROL_STAGE_SETUP) {
+            return true;
+          }
           // transfer NTB parameters to host.
           tud_control_xfer(rhport, request, (void *) (uintptr_t) &ntb_parameters, sizeof(ntb_parameters));
         } break;
 
-          // unsupported request
+        case NCM_SET_ETHERNET_PACKET_FILTER: {
+          if (stage != CONTROL_STAGE_SETUP) {
+            return true;
+          }
+
+          // Some hosts issue this request even if ETH_FILTER is not advertised,
+          // see https://bugzilla.kernel.org/show_bug.cgi?id=217290
+
+          tud_network_set_packet_filter_cb(request->wValue);
+          tud_control_xfer(rhport, request, NULL, 0);
+        } break;
+
+        case NCM_GET_NTB_INPUT_SIZE: {
+          if (stage != CONTROL_STAGE_SETUP) {
+            return true;
+          }
+
+          TU_VERIFY(request->wLength >=4, false);
+
+          uint8_t resp_len = (request->wLength >= 8 && (ncm_interface.bm_capabilities & NCM_NETWORK_CAPS_NTB_INPUT_SIZE)) ? 8 : 4;
+
+          ncm_ntb_input_size_t ntb_input_size = {
+            .dwNtbInMaxSize = ncm_interface.xmit_max_ntb_size,
+            .wNtbInMaxDatagrams = ncm_interface.xmit_max_datagrams
+          };
+          tud_control_xfer(rhport, request, &ntb_input_size, resp_len);
+        } break;
+
+        case NCM_SET_NTB_INPUT_SIZE: {
+          if (stage == CONTROL_STAGE_SETUP) {
+            /* wLength == 8 -> the NTB Input Size Structure (if NCM_NETWORK_CAPS_NTB_INPUT_SIZE is set)
+               wLength == 4 -> dwNtbInMaxSize field of the NTB Input Size Structure. */
+            TU_VERIFY(request->wLength == 4 || request->wLength == 8, false);
+            if (request->wLength == 8) {
+              TU_VERIFY(ncm_interface.bm_capabilities & NCM_NETWORK_CAPS_NTB_INPUT_SIZE, false);
+            }
+
+            tu_memclr(&ncm_interface.ntb_input_size, sizeof(ncm_interface.ntb_input_size));
+            tud_control_xfer(rhport, request, &ncm_interface.ntb_input_size, request->wLength);
+          } else if (stage == CONTROL_STAGE_DATA) {
+            /* CDC-NCM 1.0 Table 6-4, up to NTB16 size */
+            const uint32_t requested_size = ncm_interface.ntb_input_size.dwNtbInMaxSize;
+            if (requested_size < 2048u || requested_size > 65535u) {
+              return false;
+            }
+            ncm_interface.xmit_max_ntb_size = tu_min16(requested_size, CFG_TUD_NCM_IN_NTB_MAX_SIZE);
+
+            if (ncm_interface.ntb_input_size.wNtbInMaxDatagrams == 0 || ncm_interface.ntb_input_size.wNtbInMaxDatagrams > CFG_TUD_NCM_IN_MAX_DATAGRAMS_PER_NTB) {
+              ncm_interface.xmit_max_datagrams = CFG_TUD_NCM_IN_MAX_DATAGRAMS_PER_NTB;
+            } else {
+              ncm_interface.xmit_max_datagrams = ncm_interface.ntb_input_size.wNtbInMaxDatagrams;
+            }
+          }
+        } break;
+
+        // unsupported request
         default:
           return false;
       }
       break;
-      // unsupported request
+
+    // unsupported request
     default:
       return false;
   }

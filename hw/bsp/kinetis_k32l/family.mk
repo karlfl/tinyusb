@@ -8,13 +8,13 @@ MCUX_DEVICES = hw/mcu/nxp/mcux-devices-kinetis
 CFLAGS += \
 	-DCFG_TUSB_MCU=OPT_MCU_KINETIS_K32L
 
-LDFLAGS_GCC += \
+LDFLAGS += \
   -nostartfiles \
   -specs=nosys.specs -specs=nano.specs
 
 SRC_C += \
-	src/portable/nxp/khci/dcd_khci.c \
-	src/portable/nxp/khci/hcd_khci.c \
+	src/portable/chipidea/ci_fs/dcd_ci_fs.c \
+	src/portable/chipidea/ci_fs/hcd_ci_fs.c \
 	$(MCUX_DEVICES)/K32L/$(MCU_VARIANT)/system_$(MCU_VARIANT).c \
 	$(MCUX_DEVICES)/K32L/$(MCU_VARIANT)/drivers/fsl_clock.c \
 	$(MCUX_CORE)/drivers/gpio/fsl_gpio.c \

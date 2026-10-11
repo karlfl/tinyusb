@@ -1,27 +1,8 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) N Conrad
- * Copyright (c) 2024, hathach (tinyusb.org)
- * Copyright (c) 2025, HiFiPhile (Zixun LI)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2019 Nathan Conrad
+ * SPDX-FileCopyrightText: Copyright (c) 2024, Ha Thach (tinyusb.org)
+ * SPDX-FileCopyrightText: Copyright (c) 2025, HiFiPhile (Zixun LI)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -303,6 +284,8 @@ typedef struct {
   #include "fsdev_ch32.h"
 #elif defined(TUP_USBIP_FSDEV_AT32)
   #include "fsdev_at32.h"
+#elif defined(TUP_USBIP_FSDEV_APM32)
+  #include "fsdev_apm32.h"
 #else
   #error "Unknown USB IP"
 #endif
@@ -345,7 +328,7 @@ TU_ATTR_ALWAYS_INLINE static inline void ep_write_clear_ctr(uint32_t ep_id, tusb
   uint32_t reg = FSDEV_REG->ep[ep_id].reg;
   reg |= U_EP_CTR_TX | U_EP_CTR_RX;
   reg &= U_EPREG_MASK;
-  reg &= ~(1 << (U_EP_CTR_TX_Pos + (dir == TUSB_DIR_IN ? 0 : 8)));
+  reg &= ~(1u << (U_EP_CTR_TX_Pos + (dir == TUSB_DIR_IN ? 0u : 8u)));
   ep_write(ep_id, reg, false);
 }
 
@@ -378,7 +361,7 @@ TU_ATTR_ALWAYS_INLINE static inline void ch_write_clear_ctr(uint32_t ch_id, tusb
   uint32_t reg = FSDEV_REG->ep[ch_id].reg;
   reg |= U_EP_CTR_TX | U_EP_CTR_RX;
   reg &= U_EPREG_MASK;
-  reg &= ~(1 << (U_EP_CTR_TX_Pos + (dir == TUSB_DIR_IN ? 8 : 0)));
+  reg &= ~(1u << (U_EP_CTR_TX_Pos + (dir == TUSB_DIR_IN ? 8u : 0u)));
   ep_write(ch_id, reg, false);
 }
 
